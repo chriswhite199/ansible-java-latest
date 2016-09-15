@@ -1,0 +1,102 @@
+---
+
+- name: Stat version file
+  stat: path={{ version_file }}
+  register: version_file_stat
+
+- name: Get old version file
+  find: 
+    paths: "{{ version_file | dirname }}"
+    patterns: "{{ version_file | basename }}"
+    age: 1w
+  register: old_version_file
+
+# If user re-configs the packaging, update the url in the version file accordingly
+- name: Verify JDK extension
+  lineinfile:
+    dest: "{{ version_file }}"
+    regexp: "(.*)\\.(tar\\.gz|rpm)"
+    line: "\\1.{{ java_packaging }}"
+    backrefs: True
+  when: version_file_stat.stat.exists
+
+# acquire the URL of the latest JDK
+- block:
+    - name: Get latest download page
+      shell: curl -s {{ java_se_html }} | grep -E 'href=".*?/jdk.*?-downloads[^"]+"' -o
+                 | head -n 1 | cut -d'"' -f 2
+      register: java_se_download
+    - name: Discover latest JDK download URL
+      shell: curl -s {{ oracle_base_url }}{{ java_se_download.stdout }} | grep -E 'filepath":".*jdk-.*.-linux-x64\.{{ java_packaging }}"' --color -o 
+                 | head -n1 | cut -d'"' -f3
+      register: java_se_jdk_url
+    - name: Update version file with latest JDK download URL 
+      copy: 
+        dest: "{{ version_file }}" 
+        content: "{{ java_se_jdk_url.stdout }}" 
+  when: (not version_file_stat.stat.exists) or
+        (old_version_file.matched > 0)
+
+- name: Get latest JDK download URL into a variable
+  shell: cat {{ version_file }}
+  register: java_se_jdk_url
+  changed_when: false
+
+- name: Get latest JDK version components
+  shell: cat {{ version_file }} | sed -rn 's/.*jdk-([0-9]+)u([0-9]+).*/\1\n\2/p'
+  register: java_version_components
+  changed_when: false
+
+# determine if java is installed, and what the version is
+- name: Determine if java is installed
+  stat: path=/usr/bin/java
+  register: java_stat
+
+- name: Get current Java version
+  shell: java -version 2>&1 | head -n 1 | sed -rn 's/.*1\.([0-9]+)\.0_([0-9]+).*/\1\n\2/p'  
+  register: curr_java_version
+  when: java_stat.stat.exists
+  changed_when: false
+
+- name: Set Java download file variable
+  set_fact:
+    java_download_file: "{{ java_se_jdk_download_dir }}/{{ java_se_jdk_url.stdout | basename }}"
+  changed_when: false
+
+# download latest jdk (if already downloaded, then no-op)
+- get_url:
+    dest: "{{ java_download_file }}"
+    headers: "Cookie: oraclelicense=accept-securebackup-cookie"
+    url: "{{ java_se_jdk_url.stdout }}"
+
+# install tarball
+- block:
+    - name: Create Java home directory
+      file: path={{ java_tarball_home }} state=directory mode=0755
+
+    - name: Set java exe path
+      set_fact:
+        java_bin: "{{ java_tarball_home }}/jdk1.{{ java_version_components.stdout_lines[0] }}.0_{{ java_version_components.stdout_lines[1] }}/bin"
+      
+    - name: Install latest JDK tarball
+      unarchive: 
+        src: "{{ java_download_file }}"
+        dest: "{{ java_tarball_home }}"
+        remote_src: yes 
+        creates: "{{ java_bin }}/java"
+
+    - name: Update alternatives (pre 2.2 ansible)
+      # alternatives module doens't support priority in 2.1
+      shell: update-alternatives --install /usr/bin/{{ item }} {{ item }} {{ java_bin }}/{{ item }} 
+             1{{ java_version_components.stdout_lines[0] }}{{ '%04d' % (java_version_components.stdout_lines[1] | int) }}
+      with_items: "{{ java_tarball_bins }}"
+      when: (('/etc/alternatives/' + item) | realpath | default('')) != (java_bin + '/' + item) 
+
+  when: 
+    - java_packaging == 'tar.gz'
+
+# install RPM
+- block:
+    - name: Installing RPM
+      yum: name={{ java_download_file }} state=present
+  when: java_packaging == 'rpm'

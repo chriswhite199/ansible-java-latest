@@ -1,0 +1,21 @@
+---
+
+oracle_base_url: http://www.oracle.com
+java_se_html: "{{ oracle_base_url }}/technetwork/java/javase/downloads/index.html"
+
+# Where to track what the latest JDK url is
+version_file: /var/lib/java-latest-version
+
+# tar.gz OR rpm
+java_packaging: tar.gz
+
+# dir to download the jdk to (persistent file locations desirable)
+java_se_jdk_download_dir: /tmp/
+
+# if using tarball packaging, where to unpack the tarball to
+java_tarball_home: /usr/local/share/java
+
+# if using tarball, the binaries to add via update-alternatives
+java_tarball_bins:
+  - java
+  - javac
